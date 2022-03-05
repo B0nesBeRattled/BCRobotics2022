@@ -5,18 +5,18 @@
     arcade drive.
 """
 
+from re import I
 import wpilib
 import ctre
 import rev
 import numpy as np
+import time
 
-directions_dict = {
-    0:(1,0), #step_index: (distance in m, heading angle in deg)
-    1:(0,90),
-    2:(1,0),
-    3:(0,90),
+AUTONOMOUS_OPERATIONS = {
+    0:{'turn':0, 'move':1, 'action':None}, #step_index: (distance in m, heading angle in deg)
+    1:{'turn':90, 'move':1, 'action':None},
+    2:{'turn':90, 'move':0, 'action':None}
 }
-
 
 TOLERANCE = 0.1
 
@@ -58,20 +58,56 @@ class MyRobot(wpilib.TimedRobot):
 
     def autonomousInit(self) -> None:
 
-        # self.AUTO_rotate(45)
-        # self.RightMotor6.set(ctre._ctre.TalonSRXControlMode.MotionMagic, 50)
-        # g = self.LeftMotor6.getSelectedSensorPosition(0)
-        # self.LeftMotor6.set(ctre._ctre.TalonSRXControlMode.MotionMagic, g)
-        
+        # Initialize autonomous directional PID controller
+        self.turnPID = turnPID(self.LeftMotor6, self.RightMotor1)
+        self.current_instruction = 0
+        self.motors_running = False
+        self.step = 'turn'
         return super().autonomousInit()
 
     def autonomousPeriodic(self) -> None:
-        # if not self.moved_bool:
-        #     self.LeftMotor6.set(ctre._ctre.TalonSRXControlMode.MotionMagic, 10*self.encoder_ticks_per_rotation,
-        #                         ctre.DemandType.ArbitraryFeedForward, 0.05)
-        #     self.LeftMotor4.follow(self.LeftMotor6) # Set as follower for motor 6
-        #     self.LeftMotor5.follow(self.LeftMotor6) # Set as follower for motor 6
-        #     self.moved_bool = True
+
+        turn = AUTONOMOUS_OPERATIONS[self.current_instruction]['turn']
+        move = AUTONOMOUS_OPERATIONS[self.current_instruction]['move']
+        action = AUTONOMOUS_OPERATIONS[self.current_instruction]['action']
+
+        if self.step == 'turn':
+
+            # If needed, update setpoint
+            if self.turnPID.setpoint != turn:
+                self.turnPID.set_setpoint(turn)
+
+            # Perform one update step for the turning PID controller, which returns relative error
+            rel_err = self.turnPID.update()
+
+            # If returned relative error is less than tolerance, move onto the 'move' step
+            if rel_err < TOLERANCE:            
+                self.step = 'move'
+
+                # Reset 
+                self.reset_motor_position()
+
+        elif self.step == 'move':
+
+            # Set motor PID controller to move distance "move"
+            if (self.get_move_position() - move)/move >= TOLERANCE:
+                
+                if not self.motors_running:
+                    self.move_distance(move)
+
+            else:
+                self.step = 'action'
+
+        else:
+
+            # If no action, go to next step
+            if action == None:
+                self.step = 'turn'
+                self.current_instruction += 1
+                pass
+
+            # Otherwise, perform action--FIXME!!!
+
         return super().autonomousPeriodic()
 
     def teleopInit(self):
@@ -111,59 +147,75 @@ class MyRobot(wpilib.TimedRobot):
             self.RightMotor1.set(output, value)
         
         return None
+
+    def reset_motor_position(self):
+        self.LeftMotor6.setSelectedSensorPosition(0)
+        self.RightMotor1.setSelectedSensorPosition(0)
+        return None
+
+    def move_distance(self, distance):
+        self.set_DriveTrain('left', distance, output='position')
+        self.set_DriveTrain('right', distance, output='position')
+        return None
+
+    def get_move_position(self):
+        left_position = self.LeftMotor6.getSelectedSensorPosition(0)/self.encoder_ticks_per_rotation*self.wheel_diameter
+        right_position = self.RightMotor1.getSelectedSensorPosition(0)/self.encoder_ticks_per_rotation*self.wheel_diameter
+        avg_position = L2norm(left_position, right_position)
+        return avg_position
     
 
-    def AUTO_rotate(self, angle):
-        if angle > 180:
-            angle = 360 - angle
-        rotation_length = self.axel_length/self.wheel_diameter/self.gear_ratio*angle/360*self.encoder_ticks_per_rotation
+    # def AUTO_rotate(self, angle):
+    #     if angle > 180:
+    #         angle = 360 - angle
+    #     rotation_length = self.axel_length/self.wheel_diameter/self.gear_ratio*angle/360*self.encoder_ticks_per_rotation
 
-        self.set_DriveTrain('left', rotation_length, output='position')
-        self.set_DriveTrain('right', -rotation_length, output='position')
-        return None
+    #     self.set_DriveTrain('left', rotation_length, output='position')
+    #     self.set_DriveTrain('right', -rotation_length, output='position')
+    #     return None
 
-    def Enter_The_Matrix(self):
+    # def Enter_The_Matrix(self):
 
         
-        # Get motor position
-        current_position_left = self.get_position('left')
-        current_position_right = self.get_position('right')
+    #     # Get motor position
+    #     current_position_left = self.get_position('left')
+    #     current_position_right = self.get_position('right')
 
-        # Get motor heading
-        # heading = self.get_heading()
+    #     # Get motor heading
+    #     # heading = self.get_heading()
 
-        # Get current drive step
-        (set_position, set_heading) = directions_dict[self.current_step]
+    #     # Get current drive step
+    #     (set_position, set_heading) = directions_dict[self.current_step]
 
-        # if sensor position is really really really close to drive step, give new instructions
-        if set_position == 0: # moving in place around center axis of robot
+    #     # if sensor position is really really really close to drive step, give new instructions
+    #     if set_position == 0: # moving in place around center axis of robot
 
-            # Calculate expected final positions of left and right wheels
-            coeff = self.axel_length/self.wheel_diameter/360.
-            final_position_left = self.left_wheel_position + set_heading*coeff
-            final_position_right = self.right_wheel_position - set_heading*coeff
+    #         # Calculate expected final positions of left and right wheels
+    #         coeff = self.axel_length/self.wheel_diameter/360.
+    #         final_position_left = self.left_wheel_position + set_heading*coeff
+    #         final_position_right = self.right_wheel_position - set_heading*coeff
 
-            # If wheels are sufficiently close to the final position
-            if L2norm(final_position_left, current_position_left, final_position_right, current_position_right) < TOLERANCE and self.current_step+1 < len(directions_dict):
-                self.current_step += 1
+    #         # If wheels are sufficiently close to the final position
+    #         if L2norm(final_position_left, current_position_left, final_position_right, current_position_right) < TOLERANCE and self.current_step+1 < len(directions_dict):
+    #             self.current_step += 1
 
-                (set_position, set_heading) = directions_dict[self.current_step]
-                self.left_wheel_position = current_position_left 
-                self.right_wheel_position = current_position_right
-                self.set_DriveTrain('left', self.left_wheel_position + set_heading*coeff, output='position')
-                self.set_DriveTrain('right', self.right_wheel_position - set_heading*coeff, output='position')
+    #             (set_position, set_heading) = directions_dict[self.current_step]
+    #             self.left_wheel_position = current_position_left 
+    #             self.right_wheel_position = current_position_right
+    #             self.set_DriveTrain('left', self.left_wheel_position + set_heading*coeff, output='position')
+    #             self.set_DriveTrain('right', self.right_wheel_position - set_heading*coeff, output='position')
                 
 
-        # if set_heading == 0: # moving some distance along a straight line
+    #     # if set_heading == 0: # moving some distance along a straight line
             
 
-        # unpack next step from dictionary
+    #     # unpack next step from dictionary
 
-        # else pass
+    #     # else pass
 
-        return None
+    #     return None
 
-    def get_position(self, side):
+    def get_position(self, side):   
         if side == 'left':
             value = self.LeftMotor6.getSelectedSensorPosition(0)
 
@@ -218,9 +270,90 @@ def ESCInit(CANAddress, pid=False, inverted=False, kSlotIdx = 0, kPIDLoopIdx=0, 
 
     Motor.setInverted(inverted)
     return Motor    
+
+def init_solenoid(can_id, Solenoid_type='single'):
+    if Solenoid_type == 'single':
+        Solenoid = wpilib.Solenoid(can_id, wpilib.PneumaticsModuleType.REVPH)
+    else:
+        Solenoid = wpilib.DoubleSolenoid(can_id, wpilib.PneumaticsModuleType.REVPH)
+
+    Solenoid.set(False)
+    return Solenoid
+
+class IMU(object):
+    def __init__(self, baud_rate=115200):
+        self.open_serial(baud_rate)
+        
+    def open_serial(self, baud_rate):
+        self.serial = wpilib.SerialPort(baud_rate)
+        return None
     
-def L2norm(x1, x2, y1, y2):
-    return np.sqrt((x1-x2)**2 - (y1-y2)**2)/np.sqrt(x1**2 + y1**2)
+    def get_YPR(self):
+        self.serial.write('YPR\n')
+        raw_data = self.serial.read()
+        (yaw, pitch, roll) = (float(i) for i in raw_data.rstrip().split(', '))
+        return yaw, pitch, roll
+
+    def reset_serial(self):
+        self.serial.reset()
+
+class turnPID(object):
+    def __init__(self, MotorL, MotorR):
+        self.kP = 1
+        self.kI = 1
+        self.kD = 1
+        self.IMU = IMU()
+
+        self.MotorL = MotorL
+        self.MotorR = MotorR
+
+        self.t_prev = time.time_ns()/1e9
+        self.err_prev = 0
+        self.I_prev = 0
+        self.setpoint = None
+
+    def set_setpoint(self, setpoint):
+        self.setpoint = setpoint
+        return None
+
+    def update(self):
+        # Get IMU values
+        yaw, pitch, roll = self.IMU.get_YPR()
+
+        # Define process variable
+        PV = yaw
+
+        # Calculate yaw error
+        err = self.setpoint - PV
+
+        t = time.time_ns()/1e9
+
+        # Create monitor variable
+        MV = self.kP*err
+        MV += self.I_prev + self.kI*err*(t-self.t_prev)
+        MV += self.kD*(err - self.err_prev)/(t - self.t_prev)
+
+        # Write monitor variable to differential drive wheel speed
+        rel_err = err/self.setpoint
+        if rel_err >= TOLERANCE:
+            self.__set_motors__(MV)
+        else:
+            self.__set_motors__(0)
+
+        # Update logged values for next update step
+        self.t_prev = t
+        self.err_prev = err
+        self.I_prev = I
+
+        return rel_err
+
+    def __set_motors__(self, MV):
+        self.MotorL.set(ctre._ctre.TalonSRXControlMode.PercentOutput, MV)
+        self.MotorR.set(ctre._ctre.TalonSRXControlMode.PercentOutput, -MV)
+        return None
+    
+def L2norm(x,y):
+    return np.sqrt(x**2 - y**2)/np.sqrt(x*y)
 
 #%% ###########################################################################
 
